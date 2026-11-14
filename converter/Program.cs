@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -25,7 +26,10 @@ internal sealed class ConverterWindow : Form
     private readonly ComboBox formatBox = new();
     private readonly ComboBox qualityBox = new();
     private readonly Button convertButton = new();
-    private readonly ProgressBar progress = new();
+    private readonly Panel progressTrack = new();
+    private readonly Panel progressIndicator = new();
+    private readonly System.Windows.Forms.Timer progressTimer = new() { Interval = 16 };
+    private int progressDirection = 1;
     private readonly Label status = new();
     private static readonly HttpClient Downloader = new() { Timeout = TimeSpan.FromMinutes(30) };
     private const string FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip";
@@ -39,12 +43,17 @@ internal sealed class ConverterWindow : Form
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(760, 585);
         MinimumSize = new Size(700, 550);
-        BackColor = Color.FromArgb(245, 247, 242);
+        BackColor = Color.FromArgb(28, 29, 31);
         Font = new Font("Segoe UI", 9F);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         Icon = SystemIcons.Application;
         BuildUi();
+        HandleCreated += (_, _) =>
+        {
+            try { var enabled = 1; DwmSetWindowAttribute(Handle, 20, ref enabled, sizeof(int)); } catch { }
+        };
+        progressTimer.Tick += (_, _) => AnimateProgress();
         FormClosing += HandleClosing;
     }
 
@@ -52,16 +61,16 @@ internal sealed class ConverterWindow : Form
     {
         var header = new Panel { Dock = DockStyle.Top, Height = 76, Padding = new Padding(28, 17, 28, 12), BackColor = BackColor };
         Controls.Add(header);
-        var logo = new Label { Text = "↔", TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 18, FontStyle.Bold), ForeColor = Color.FromArgb(32, 48, 32), BackColor = Color.FromArgb(185, 245, 104), Location = new Point(28, 17), Size = new Size(42, 42) };
+        var logo = new Label { Text = "↔", TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 18, FontStyle.Bold), ForeColor = Color.FromArgb(235, 236, 238), BackColor = Color.FromArgb(54, 56, 60), Location = new Point(28, 17), Size = new Size(42, 42) };
         header.Controls.Add(logo);
-        header.Controls.Add(new Label { Text = "C0_0nverter", AutoSize = true, Font = new Font("Segoe UI", 18, FontStyle.Bold), ForeColor = Color.FromArgb(32, 37, 31), Location = new Point(82, 22) });
-        header.Controls.Add(new Label { Text = "ЛОКАЛЬНЫЙ КОНВЕРТЕР", AutoSize = true, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.FromArgb(125, 135, 121), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(545, 32) });
+        header.Controls.Add(new Label { Text = "C0_0nverter", AutoSize = true, Font = new Font("Segoe UI", 18, FontStyle.Bold), ForeColor = Color.FromArgb(239, 240, 242), Location = new Point(82, 22) });
+        header.Controls.Add(new Label { Text = "ЛОКАЛЬНЫЙ КОНВЕРТЕР", AutoSize = true, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.FromArgb(160, 162, 167), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(545, 32) });
 
-        var title = new Label { Text = "Ваши файлы. Нужный формат.", AutoSize = true, Font = new Font("Segoe UI", 24, FontStyle.Bold), ForeColor = Color.FromArgb(32, 37, 31), Location = new Point(30, 91) };
+        var title = new Label { Text = "Ваши файлы. Нужный формат.", AutoSize = true, Font = new Font("Segoe UI", 24, FontStyle.Bold), ForeColor = Color.FromArgb(240, 241, 243), Location = new Point(30, 91) };
         Controls.Add(title);
-        Controls.Add(new Label { Text = "Аудио и видео перекодируются через FFmpeg прямо на этом компьютере.", AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.FromArgb(116, 125, 112), Location = new Point(32, 137) });
+        Controls.Add(new Label { Text = "Аудио и видео перекодируются через FFmpeg прямо на этом компьютере.", AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = Color.FromArgb(174, 176, 181), Location = new Point(32, 137) });
 
-        var card = new Panel { Location = new Point(28, 173), Size = new Size(704, 326), BackColor = Color.White, Padding = new Padding(22), BorderStyle = BorderStyle.FixedSingle };
+        var card = new Panel { Location = new Point(28, 173), Size = new Size(704, 326), BackColor = Color.FromArgb(36, 38, 41), Padding = new Padding(22), BorderStyle = BorderStyle.FixedSingle };
         Controls.Add(card);
         AddCaption(card, "ИСХОДНЫЙ ФАЙЛ", 22, 18);
         sourceBox.Location = new Point(22, 46); sourceBox.Size = new Size(518, 34); StyleTextBox(sourceBox); card.Controls.Add(sourceBox);
@@ -69,23 +78,36 @@ internal sealed class ConverterWindow : Form
 
         AddCaption(card, "ФОРМАТ РЕЗУЛЬТАТА", 22, 101);
         AddCaption(card, "КАЧЕСТВО", 366, 101);
-        formatBox.Location = new Point(22, 128); formatBox.Size = new Size(320, 36); formatBox.DropDownStyle = ComboBoxStyle.DropDownList; formatBox.Font = new Font("Segoe UI", 10); formatBox.Items.AddRange(VideoFormats.Concat(AudioFormats).Cast<object>().ToArray()); formatBox.SelectedIndex = 0; formatBox.SelectedIndexChanged += (_, _) => UpdateOutputExtension(); card.Controls.Add(formatBox);
-        qualityBox.Location = new Point(366, 128); qualityBox.Size = new Size(310, 36); qualityBox.DropDownStyle = ComboBoxStyle.DropDownList; qualityBox.Font = new Font("Segoe UI", 10); qualityBox.Items.AddRange(Qualities.Cast<object>().ToArray()); qualityBox.SelectedIndex = 1; card.Controls.Add(qualityBox);
+        StyleCombo(formatBox); formatBox.Location = new Point(22, 128); formatBox.Size = new Size(320, 36); formatBox.Items.AddRange(VideoFormats.Concat(AudioFormats).Cast<object>().ToArray()); formatBox.SelectedIndex = 0; formatBox.SelectedIndexChanged += (_, _) => UpdateOutputExtension(); card.Controls.Add(formatBox);
+        StyleCombo(qualityBox); qualityBox.Location = new Point(366, 128); qualityBox.Size = new Size(310, 36); qualityBox.Items.AddRange(Qualities.Cast<object>().ToArray()); qualityBox.SelectedIndex = 1; card.Controls.Add(qualityBox);
 
         AddCaption(card, "СОХРАНИТЬ КАК", 22, 185);
         outputBox.Location = new Point(22, 212); outputBox.Size = new Size(518, 34); StyleTextBox(outputBox); card.Controls.Add(outputBox);
         var saveAs = MakeButton("Изменить…", true); saveAs.Location = new Point(550, 210); saveAs.Size = new Size(126, 37); saveAs.Click += (_, _) => PickOutput(); card.Controls.Add(saveAs);
-        card.Controls.Add(new Label { Text = "Выберите аудиоформат, чтобы извлечь звук из видео.", AutoSize = true, Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(139, 148, 133), Location = new Point(22, 269) });
+        card.Controls.Add(new Label { Text = "Выберите аудиоформат, чтобы извлечь звук из видео.", AutoSize = true, Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(164, 166, 171), Location = new Point(22, 269) });
 
-        progress.Location = new Point(30, 516); progress.Size = new Size(700, 8); progress.Style = ProgressBarStyle.Marquee; progress.MarqueeAnimationSpeed = 26; progress.Visible = false; Controls.Add(progress);
-        status.Text = "Выберите аудио- или видеофайл для начала"; status.Location = new Point(31, 535); status.Size = new Size(430, 24); status.ForeColor = Color.FromArgb(116, 125, 112); Controls.Add(status);
-        convertButton.Text = "Конвертировать  ↗"; convertButton.Size = new Size(190, 45); convertButton.Location = new Point(540, 524); convertButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right; convertButton.FlatStyle = FlatStyle.Flat; convertButton.FlatAppearance.BorderSize = 0; convertButton.BackColor = Color.FromArgb(185, 245, 104); convertButton.ForeColor = Color.FromArgb(32, 43, 30); convertButton.Font = new Font("Segoe UI", 10, FontStyle.Bold); convertButton.Cursor = Cursors.Hand; convertButton.Click += async (_, _) => await ConvertAsync(); Controls.Add(convertButton);
-        Controls.Add(new Label { Text = "ФАЙЛЫ НЕ ПОКИДАЮТ ВАШ КОМПЬЮТЕР  ·  MP4  MKV  MOV  WEBM  MP3  WAV  FLAC  OGG  AAC", AutoSize = true, Font = new Font("Segoe UI", 8), ForeColor = Color.FromArgb(153, 162, 147), Location = new Point(30, 570) });
+        progressTrack.Location = new Point(30, 516); progressTrack.Size = new Size(700, 8); progressTrack.BackColor = Color.FromArgb(47, 49, 53); progressTrack.Visible = false; Controls.Add(progressTrack);
+        progressIndicator.Location = new Point(0, 0); progressIndicator.Size = new Size(130, 8); progressIndicator.BackColor = Color.FromArgb(125, 127, 132); progressTrack.Controls.Add(progressIndicator);
+        status.Text = "Выберите аудио- или видеофайл для начала"; status.Location = new Point(31, 535); status.Size = new Size(430, 24); status.ForeColor = Color.FromArgb(177, 179, 184); Controls.Add(status);
+        convertButton.Text = "Конвертировать  ↗"; convertButton.Size = new Size(190, 45); convertButton.Location = new Point(540, 524); convertButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right; convertButton.FlatStyle = FlatStyle.Flat; convertButton.FlatAppearance.BorderSize = 0; convertButton.BackColor = Color.FromArgb(67, 69, 74); convertButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(82, 84, 89); convertButton.ForeColor = Color.FromArgb(240, 241, 243); convertButton.Font = new Font("Segoe UI", 10, FontStyle.Bold); convertButton.Cursor = Cursors.Hand; convertButton.Click += async (_, _) => await ConvertAsync(); Controls.Add(convertButton);
+        Controls.Add(new Label { Text = "ФАЙЛЫ НЕ ПОКИДАЮТ ВАШ КОМПЬЮТЕР  ·  MP4  MKV  MOV  WEBM  MP3  WAV  FLAC  OGG  AAC", AutoSize = true, Font = new Font("Segoe UI", 8), ForeColor = Color.FromArgb(153, 155, 160), Location = new Point(30, 570) });
     }
 
-    private static void AddCaption(Control parent, string text, int x, int y) => parent.Controls.Add(new Label { Text = text, AutoSize = true, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.FromArgb(131, 141, 126), Location = new Point(x, y) });
-    private static void StyleTextBox(TextBox box) { box.BorderStyle = BorderStyle.FixedSingle; box.Font = new Font("Segoe UI", 10); box.BackColor = Color.FromArgb(248, 249, 246); }
-    private static Button MakeButton(string text, bool light) => new() { Text = text, FlatStyle = FlatStyle.Flat, BackColor = light ? Color.FromArgb(240, 243, 235) : Color.FromArgb(185, 245, 104), ForeColor = Color.FromArgb(41, 53, 42), Font = new Font("Segoe UI", 9, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false, FlatAppearance = { BorderSize = 0 } };
+    private static void AddCaption(Control parent, string text, int x, int y) => parent.Controls.Add(new Label { Text = text, AutoSize = true, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.FromArgb(174, 176, 181), BackColor = Color.FromArgb(36, 38, 41), Location = new Point(x, y) });
+    private static void StyleTextBox(TextBox box) { box.BorderStyle = BorderStyle.FixedSingle; box.Font = new Font("Segoe UI", 10); box.BackColor = Color.FromArgb(47, 49, 53); box.ForeColor = Color.FromArgb(237, 238, 240); }
+    private static void StyleCombo(ComboBox box)
+    {
+        box.DropDownStyle = ComboBoxStyle.DropDownList; box.Font = new Font("Segoe UI", 10); box.BackColor = Color.FromArgb(47, 49, 53); box.ForeColor = Color.FromArgb(237, 238, 240); box.FlatStyle = FlatStyle.Flat; box.DrawMode = DrawMode.OwnerDrawFixed; box.ItemHeight = 24;
+        box.DrawItem += (_, e) =>
+        {
+            if (e.Index < 0) return;
+            var background = (e.State & DrawItemState.Selected) != 0 ? Color.FromArgb(68, 70, 75) : Color.FromArgb(47, 49, 53);
+            using var brush = new SolidBrush(background);
+            e.Graphics.FillRectangle(brush, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, box.Items[e.Index]?.ToString() ?? "", box.Font, e.Bounds, Color.FromArgb(237, 238, 240), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        };
+    }
+    private static Button MakeButton(string text, bool light) => new() { Text = text, FlatStyle = FlatStyle.Flat, BackColor = light ? Color.FromArgb(54, 56, 60) : Color.FromArgb(67, 69, 74), ForeColor = Color.FromArgb(237, 238, 240), Font = new Font("Segoe UI", 9, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false, FlatAppearance = { BorderSize = 0, MouseOverBackColor = Color.FromArgb(79, 81, 86) } };
 
     private void PickSource()
     {
@@ -126,7 +148,7 @@ internal sealed class ConverterWindow : Form
         var (muxer, args) = GetCodecSettings(format, qualityBox.SelectedIndex);
         var temp = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output))!, $".{Path.GetFileNameWithoutExtension(output)}.c0_0nverter-tmp.{GetExtension()}");
         try { if (File.Exists(temp)) File.Delete(temp); } catch { }
-        convertButton.Enabled = false; progress.Visible = true; status.Text = "Идёт перекодирование… Это может занять несколько минут.";
+        convertButton.Enabled = false; progressTrack.Visible = true; progressTimer.Start(); status.Text = "Идёт перекодирование… Это может занять несколько минут.";
         var errors = new StringBuilder();
         try
         {
@@ -160,7 +182,7 @@ internal sealed class ConverterWindow : Form
         finally
         {
             try { if (File.Exists(temp)) File.Delete(temp); } catch { }
-            if (!closing) { progress.Visible = false; convertButton.Enabled = true; }
+            if (!closing) { progressTimer.Stop(); progressTrack.Visible = false; convertButton.Enabled = true; }
         }
     }
 
@@ -240,6 +262,14 @@ internal sealed class ConverterWindow : Form
         return null;
     }
 
+    private void AnimateProgress()
+    {
+        var x = progressIndicator.Left + progressDirection * 5;
+        if (x <= 0) { x = 0; progressDirection = 1; }
+        else if (x >= progressTrack.ClientSize.Width - progressIndicator.Width) { x = progressTrack.ClientSize.Width - progressIndicator.Width; progressDirection = -1; }
+        progressIndicator.Left = x;
+    }
+
     private void HandleClosing(object? sender, FormClosingEventArgs e)
     {
         if (currentProcess is { HasExited: false } process)
@@ -249,5 +279,9 @@ internal sealed class ConverterWindow : Form
             try { process.Kill(true); } catch { }
         }
         closing = true;
+        progressTimer.Stop();
     }
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int valueSize);
 }
