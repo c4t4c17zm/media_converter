@@ -9,10 +9,32 @@ namespace C0_0nverter;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--remove-context-menu")
+        {
+            ShellContextMenu.Unregister();
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--register-context-menu")
+        {
+            ShellContextMenu.Register();
+            return;
+        }
+
+        try { ShellContextMenu.Register(); }
+        catch { /* The converter still works if the Explorer menu cannot be registered. */ }
+
+        string? inputFile = null;
+        string? automaticFormat = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--from-explorer" && i + 1 < args.Length) inputFile = args[++i];
+            else if (args[i] == "--auto-format" && i + 1 < args.Length) automaticFormat = args[++i];
+        }
+
         ApplicationConfiguration.Initialize();
-        Application.Run(new ConverterWindow());
+        Application.Run(new ConverterWindow(inputFile, automaticFormat));
     }
 }
 
@@ -41,8 +63,11 @@ internal sealed class ConverterWindow : Form
     private Process? currentProcess;
     private bool closing;
 
-    public ConverterWindow()
+    private readonly string? automaticFormat;
+
+    public ConverterWindow(string? initialFile = null, string? convertFormat = null)
     {
+        automaticFormat = convertFormat;
         Text = "C0_0nverter — конвертер медиа";
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(760, 510);
@@ -59,6 +84,19 @@ internal sealed class ConverterWindow : Form
         };
         progressTimer.Tick += (_, _) => AnimateProgress();
         FormClosing += HandleClosing;
+        if (!string.IsNullOrWhiteSpace(initialFile) && File.Exists(initialFile))
+        {
+            sourceBox.Text = initialFile;
+            if (!string.IsNullOrWhiteSpace(automaticFormat) && formatBox.Items.Contains(automaticFormat))
+                formatBox.SelectedItem = automaticFormat;
+            UpdateOutputExtension();
+            var source = Path.GetFullPath(initialFile);
+            var output = Path.GetFullPath(outputBox.Text);
+            if (string.Equals(source, output, StringComparison.OrdinalIgnoreCase))
+                outputBox.Text = Path.Combine(Path.GetDirectoryName(source)!, Path.GetFileNameWithoutExtension(source) + "_converted" + Path.GetExtension(output));
+            status.Text = $"Выбран файл: {Path.GetFileName(initialFile)}";
+            if (automaticFormat is not null) Shown += async (_, _) => await ConvertAsync();
+        }
     }
 
     private void BuildUi()
